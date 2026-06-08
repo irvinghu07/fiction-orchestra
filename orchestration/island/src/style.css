@@ -1,0 +1,291 @@
+/* Fiction Island — "mission console" aesthetic: dark, dense, monospace, with
+   layered depth (gradients, grain, accent bars, model chips). */
+:root {
+  color-scheme: dark;
+  --bg-0:#080a0f; --bg-1:#0d1117; --bg-2:#141a23; --bg-3:#1b2330;
+  --line:#222b38; --line-2:#2c3949;
+  --ink:#e9eef5; --ink-2:#9aa6b4; --ink-3:#697384;
+  --amber:#e0a93a; --amber-soft:#d2992233;
+  --gold:#f2c14e; --gold-text:#f6d27a; --red:#f85149;
+  --radius:15px;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;             /* transparent window → rounded corners show through */
+  color: var(--ink);
+  font: 13px/1.45 "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* ---- the rounded panel ---- */
+.app {
+  position: relative;
+  height: 100vh;
+  display: flex; flex-direction: column;
+  border-radius: var(--radius);  /* uniform — matches the native vibrancy backing radius */
+  border: 1px solid #2a3442;
+  transition: opacity .3s ease, backdrop-filter .3s ease, background .3s ease;
+  /* TRANSLUCENT dark tint over the native HudWindow vibrancy — NOT opaque hex, or the
+     glass is fully hidden. Moderate alpha (~.5) when focused: readable but the macOS
+     blur clearly shows through; low luminosity via near-black tints. */
+  background:
+    radial-gradient(120% 80% at 50% -10%, rgba(26,34,48,.42) 0%, transparent 60%),
+    linear-gradient(180deg, rgba(13,18,26,.5) 0%, rgba(10,13,19,.55) 38%, rgba(5,7,11,.62) 100%);
+  /* NO outer drop-shadow: the window is content-sized + transparent, so any outer
+     shadow gets clipped to the window rectangle and paints a dark SQUARE behind the
+     rounded panel (the "square corners" bug). Inset highlights only. */
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.05),
+    inset 0 0 0 1px rgba(255,255,255,.015);
+  overflow: hidden;
+}
+/* faint grain overlay for texture */
+.app::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .035; z-index: 5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---- header / pill ---- */
+header {
+  display: flex; align-items: center; gap: 9px;
+  padding: 11px 13px 10px;
+  background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0));
+  border-bottom: 1px solid var(--line);
+  /* The ENTIRE header (dot · APHRODITE · badge · chevron) is the expand/collapse
+     click target. Drag the window by the sub-line below instead. */
+  -webkit-app-region: no-drag; cursor: pointer;
+  position: relative; z-index: 2;
+}
+header:hover { background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.01)); }
+/* The mark + wordmark are a click target that toggles expand/collapse (bigger than
+   the chevron). no-drag so the click registers; drag the rest of the header to move. */
+.mark, .title { -webkit-app-region: no-drag; cursor: pointer; }
+.mark { font-size: 13px; filter: saturate(.6) brightness(1.1); opacity: .9; }
+.title {
+  font-weight: 700; font-size: 12.5px; letter-spacing: .14em; color: var(--ink);
+  text-shadow: 0 1px 0 rgba(0,0,0,.4);
+}
+.title:hover, .mark:hover { color: #fff; opacity: 1; }
+.chev {
+  -webkit-app-region: no-drag;
+  background: none; border: none; color: var(--ink-3); cursor: pointer;
+  font-size: 13px; padding: 0 2px; transition: color .2s, transform .2s;
+}
+.chev:hover { color: var(--ink); }
+
+.dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  background: #6e7681; transition: background .3s;
+}
+.dot.idle    { background: #6e7681; }
+.dot.starting,
+.dot.running { background: var(--amber); box-shadow: 0 0 0 0 rgba(224,169,58,.5); animation: dotpulse 1.5s ease-out infinite; }
+.dot.done    { background: var(--gold); box-shadow: 0 0 8px rgba(242,193,78,.5); }
+.dot.failed,
+.dot.timeout { background: var(--red);   box-shadow: 0 0 8px rgba(248,81,73,.5); }
+@keyframes dotpulse {
+  0%   { box-shadow: 0 0 0 0 rgba(224,169,58,.55); }
+  70%  { box-shadow: 0 0 0 7px rgba(224,169,58,0); }
+  100% { box-shadow: 0 0 0 0 rgba(224,169,58,0); }
+}
+
+/* status badge pill */
+.badge {
+  margin-left: auto; -webkit-app-region: no-drag;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px;
+  color: var(--ink-2); background: #ffffff08; border: 1px solid var(--line-2);
+}
+.badge.running, .badge.starting { color: #f0c560; background: #e0a93a18; border-color: #e0a93a44; }
+.badge.done    { color: #f6d27a; background: #f2c14e18; border-color: #f2c14e55; }
+.badge.failed, .badge.timeout { color: #ff8b85; background: #f8514918; border-color: #f8514955; }
+
+/* ---- sub line + progress bar ---- */
+.sub {
+  display: flex; gap: 9px; align-items: center;
+  padding: 7px 13px 6px; font-size: 11px; color: var(--ink-2);
+  -webkit-app-region: drag;   /* drag the window here (header is the toggle target) */
+  position: relative; z-index: 2;
+}
+.sub .play { color: var(--ink); font-weight: 600; letter-spacing: .02em; }
+.sub .prog { color: var(--ink-3); }
+.conn { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; }
+.conn i { width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
+.conn.on  i { background: var(--gold); box-shadow: 0 0 6px var(--gold); animation: blink 1.6s ease-in-out infinite; }
+.conn.on  b { color: var(--gold); font-weight: 600; }
+.conn.off b { color: var(--ink-3); font-weight: 600; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+.bar { height: 3px; background: #ffffff08; position: relative; z-index: 2; }
+.bar span {
+  display: block; height: 100%; width: 0;
+  background: linear-gradient(90deg, #f2c14e88, var(--gold));
+  box-shadow: 0 0 8px rgba(242,193,78,.5);
+  transition: width .5s cubic-bezier(.4,0,.2,1);
+}
+.app.running .bar span { background: linear-gradient(90deg, #d2992288, var(--amber)); box-shadow: 0 0 8px rgba(224,169,58,.4); }
+
+/* ---- board / lanes ---- */
+/* Recess the expandable body so the always-visible title cluster (header + sub +
+   bar) reads as a distinct "pill" sitting above it. */
+main {
+  padding: 12px 12px 13px; overflow-y: auto; position: relative; z-index: 1;
+  border-top: 1px solid var(--line-2);
+  /* translucent so the vibrancy carries through the expanded body too (glass, not a
+     solid panel) — slightly darker than the header pill to keep the recessed look. */
+  background: linear-gradient(180deg, rgba(5,7,11,.55) 0%, rgba(6,8,12,.6) 60%);
+  box-shadow: inset 0 7px 12px -9px rgba(0,0,0,.8);
+}
+main::-webkit-scrollbar { width: 7px; }
+main::-webkit-scrollbar-thumb { background: #2a3442; border-radius: 4px; }
+
+.lanes { display: flex; flex-direction: column; gap: 6px; }
+.lane {
+  position: relative;
+  display: grid; grid-template-columns: 18px 1fr auto; gap: 9px;
+  align-items: start; padding: 8px 11px 8px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--bg-2), #11161e);
+  box-shadow: 0 1px 0 rgba(255,255,255,.025) inset, 0 2px 6px rgba(0,0,0,.25);
+  animation: cardIn .35s ease both;
+}
+@keyframes cardIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* left status accent bar */
+.lane::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+  border-radius: 3px; background: var(--ink-3);
+}
+.lane .g { text-align: center; padding-top: 1px; color: var(--ink-2); }
+.lane .meta { min-width: 0; }
+.lane .top { display: flex; align-items: center; gap: 7px; }
+.lane .id { color: var(--ink); font-weight: 600; }
+.lane .desc {
+  color: var(--ink-3); font-size: 10.5px; margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lane .el { color: var(--ink-2); font-size: 11px; padding-top: 1px; font-variant-numeric: tabular-nums; }
+
+/* running: amber accent + glow + sweep + spin */
+.lane.running { border-color: #d2992233; }
+.lane.running::before { background: var(--amber); box-shadow: 0 0 8px var(--amber-soft); animation: barpulse 1.6s ease-in-out infinite; }
+.lane.running { overflow: hidden; animation: cardIn .35s ease both, laneglow 1.8s ease-in-out infinite; }
+@keyframes laneglow {
+  0%,100% { box-shadow: 0 1px 0 rgba(255,255,255,.025) inset, 0 2px 6px rgba(0,0,0,.25); }
+  50%     { box-shadow: 0 1px 0 rgba(255,255,255,.025) inset, 0 2px 6px rgba(0,0,0,.25), 0 0 12px rgba(224,169,58,.13); }
+}
+@keyframes barpulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+.lane.running::after {
+  content: ""; position: absolute; left: 0; bottom: 0; height: 2px; width: 36%;
+  background: linear-gradient(90deg, transparent, var(--amber), transparent);
+  animation: sweep 1.5s ease-in-out infinite;
+}
+@keyframes sweep { 0% { transform: translateX(-110%);} 100% { transform: translateX(370%);} }
+.lane.running .g { display: inline-block; color: var(--amber); animation: spin 2.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.lane.done { opacity: .74; }
+.lane.done::before { background: var(--gold); }
+.lane.done .g { color: var(--gold); }
+.lane.pending { opacity: .46; }
+.lane.pending::before { background: #3a434f; }
+.lane.failed::before, .lane.timeout::before { background: var(--red); }
+.lane.failed .g, .lane.timeout .g { color: var(--red); }
+.empty { color: var(--ink-3); padding: 8px 2px; font-style: italic; }
+
+/* ---- model chips ---- */
+.chip {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .02em;
+  padding: 1.5px 7px; border-radius: 999px;
+  border: 1px solid var(--line-2); color: var(--ink-2); background: #ffffff06;
+  white-space: nowrap;
+}
+.chip.m-claude   { color:#eaa588; border-color:#d9775755; background:#d9775714; }
+.chip.m-codex    { color:#52d6b0; border-color:#10a37f55; background:#10a37f14; }
+.chip.m-grok     { color:#a8bbd6; border-color:#7d93b855; background:#7d93b814; }
+.chip.m-gemini,
+.chip.m-agy      { color:#84acf0; border-color:#4285f455; background:#4285f414; }
+.chip.m-deepseek { color:#9aa2ff; border-color:#6d7cff55; background:#6d7cff16; }
+.chip.m-kimi     { color:#c9a3ff; border-color:#b07cff55; background:#b07cff16; }
+.chip.m-glm      { color:#5fd2c4; border-color:#2a9d8f55; background:#2a9d8f16; }
+
+/* ---- artifact ---- */
+.artifact {
+  display: flex; gap: 7px; margin-top: 8px; padding: 8px 11px;
+  background: linear-gradient(180deg, #241d0d, #1b1509);
+  border: 1px solid #f2c14e44; border-radius: 9px;
+  color: #f6d27a; text-decoration: none; font-size: 11px; word-break: break-all;
+  box-shadow: 0 0 14px rgba(242,193,78,.08);
+}
+.artifact .arr { color: var(--gold); }
+
+/* ---- ops ---- */
+.ops { margin-top: 13px; border-top: 1px solid var(--line); padding-top: 11px; display: flex; flex-direction: column; gap: 7px; }
+.ops .row { display: flex; align-items: center; gap: 8px; }
+.ops .row.btns { gap: 7px; }
+.ops .lbl { color: var(--ink-3); width: 88px; flex: 0 0 auto; white-space: nowrap; }
+.ops .val { flex: 1; color: var(--ink-2); font-size: 11px; }
+.ops .val.up   { color: var(--gold); }
+.ops .val.down { color: var(--red); }
+button {
+  -webkit-app-region: no-drag;
+  background: linear-gradient(180deg, #232c39, #1a212c);
+  color: var(--ink); border: 1px solid var(--line-2);
+  border-radius: 7px; padding: 5px 11px; font: inherit; font-size: 11px; cursor: pointer;
+  box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 1px 2px rgba(0,0,0,.3);
+  transition: border-color .15s, transform .08s, background .15s;
+}
+button:hover { border-color: #3c4a5d; background: linear-gradient(180deg, #2a3442, #1e2733); }
+button:active { transform: translateY(1px); }
+.ext { color: var(--ink-3); }
+
+.out {
+  margin: 6px 0 0; padding: 9px; max-height: 170px; overflow: auto;
+  background: #05080d; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--ink-2);
+}
+
+.settings { margin-top: 11px; }
+.settings summary { cursor: pointer; color: var(--ink-3); font-size: 11px; }
+.settings label { display: flex; flex-direction: column; gap: 4px; margin: 9px 0; font-size: 11px; color: var(--ink-3); }
+.settings input {
+  -webkit-app-region: no-drag;
+  background: #05080d; border: 1px solid var(--line-2); border-radius: 7px;
+  color: var(--ink); padding: 6px 8px; font: inherit; font-size: 11px;
+}
+.settings input:focus { outline: none; border-color: #3c4a5d; }
+
+/* ---- unfocused: frosted glass + dimmed + calm (S25 distraction control) ---- */
+/* When the cockpit isn't the focused window it collapses to the pill (JS) and we
+   frost the backdrop, dim it, and pause attention-grabbing motion so it recedes
+   while you work in Chrome / OpenClaw. */
+body.unfocused .app {
+  opacity: 1;
+  border-color: #222d3e;
+  /* STRONG frosted glass + LOW luminosity: a very low-alpha, very DARK tint over the
+     native vibrancy. Low alpha → the macOS blur dominates (you see Chrome blurred
+     through it); dark tint → dim, low-distraction. */
+  background: linear-gradient(180deg, rgba(3,5,9,.32) 0%, rgba(2,3,6,.4) 100%);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.03);
+}
+/* dim the text/chrome too when unfocused so nothing glows at you */
+body.unfocused header { background: linear-gradient(180deg, rgba(255,255,255,.015), transparent); border-bottom-color: #1a2230; }
+body.unfocused .title { color: var(--ink-2); }
+body.unfocused main { background: linear-gradient(180deg, rgba(2,3,6,.34), rgba(2,3,6,.4)); }
+body.unfocused main {
+  background: linear-gradient(180deg, rgba(7,10,15,.5), rgba(8,10,15,.42));
+}
+/* freeze the pulsing/spinning/sweeping while you're away */
+body.unfocused .dot.running,
+body.unfocused .dot.starting,
+body.unfocused .lane.running,
+body.unfocused .lane.running .g,
+body.unfocused .lane.running::before,
+body.unfocused .lane.running::after,
+body.unfocused .conn.on i,
+body.unfocused .bar span {
+  animation-play-state: paused !important;
+}

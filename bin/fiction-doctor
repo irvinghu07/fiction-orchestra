@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# fiction-doctor — one-shot health check of the whole stack (Mac host + arch).
+# Read-only: never mutates anything. Exit 0 if all critical checks pass, 1 otherwise.
+# See DEPLOY.md for what each piece is and how to fix a failure.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+ARCH="${ARCH_HOST:-arch}"
+CTR="${OPENCLAW_CONTAINER:-agent-lab-openclaw}"
+PORT="${HOST_MCP_PORT:-8765}"
+
+pass=0 fail=0 warn=0
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass+1)); }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=$((fail+1)); }
+note() { printf '  \033[33m!\033[0m %s\n' "$1"; warn=$((warn+1)); }
+hdr()  { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+TS_IP="$( (command -v tailscale >/dev/null && tailscale ip -4 2>/dev/null | head -1) || true )"
+
+hdr "Mac — config"
+if [ -f "$ROOT/.env" ]; then
+  ok ".env present"
+  for k in HOST_MCP_TOKEN OPENCLAW_GATEWAY_TOKEN DEEPSEEK_API_KEY MOONSHOT_API_KEY; do
+    grep -q "^$k=" "$ROOT/.env" && ok ".env has $k" || bad ".env missing $k"
+  done
+else
+  bad ".env missing (see DEPLOY.md §4)"
+fi
+
+hdr "Mac — launchd services"
+LL="$(launchctl list 2>/dev/null)"
+for svc in fiction-host-mcp fiction-host-runner fiction-healthcheck; do
+  echo "$LL" | grep -q "ai.openclaw.$svc" && ok "$svc loaded" || {
+    [ "$svc" = "fiction-host-mcp" ] && bad "$svc NOT loaded (bin/host-runnerctl install)" || note "$svc not loaded"
+  }
+done
+
+hdr "Mac — host-mcp server (:$PORT)"
+LSOF="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null)"
+if [ -n "$LSOF" ]; then
+  ok "listening on :$PORT"
+  if echo "$LSOF" | grep -q '0.0.0.0'; then
+    bad "bound to 0.0.0.0 — should be the tailnet IP only (firewall!)"
+  elif [ -n "$TS_IP" ] && echo "$LSOF" | grep -q "$TS_IP"; then
+    ok "bound to tailnet IP $TS_IP (not 0.0.0.0)"
+  else
+    note "bound, but could not confirm it's the tailnet IP — verify manually"
+  fi
+else
+  bad "nothing listening on :$PORT (kickstart ai.openclaw.fiction-host-mcp)"
+fi
+BASE="http://${TS_IP:-127.0.0.1}:$PORT"
+[ "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$BASE/healthz" 2>/dev/null)" = "200" ] \
+  && ok "/healthz responds 200" || bad "/healthz not responding ($BASE/healthz)"
+[ "$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$BASE/live" 2>/dev/null)" = "200" ] \
+  && ok "/live dashboard serves 200" || bad "/live not serving ($BASE/live)"
+
+hdr "arch — OpenClaw client"
+if ssh -o ConnectTimeout=6 "$ARCH" true 2>/dev/null; then
+  ok "ssh $ARCH reachable"
+  if ssh -o ConnectTimeout=6 "$ARCH" "docker ps --filter name=$CTR --format '{{.Names}}'" 2>/dev/null | grep -q "$CTR"; then
+    ok "$CTR running"
+    ssh -o ConnectTimeout=6 "$ARCH" "docker exec $CTR openclaw mcp list 2>/dev/null" 2>/dev/null | grep -q fiction-host \
+      && ok "fiction-host MCP registered" || bad "fiction-host NOT registered (bin/register-arch-mcp)"
+  else
+    bad "$CTR not running on $ARCH"
+  fi
+else
+  note "ssh $ARCH unreachable (arch off / off-tailnet?) — skipped arch checks"
+fi
+
+hdr "Summary"
+printf '  %d passed, %d failed, %d warnings\n' "$pass" "$fail" "$warn"
+[ "$fail" -eq 0 ] && { printf '  \033[32mhealthy\033[0m\n'; exit 0; } || { printf '  \033[31mneeds attention — see DEPLOY.md\033[0m\n'; exit 1; }

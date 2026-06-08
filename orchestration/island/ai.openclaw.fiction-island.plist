@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Optional launch-at-login for the Fiction Island cockpit (a GUI app).
+     Adjust the .app path if not installed in /Applications. This runs in the
+     user's Aqua GUI session so native notifications post reliably.
+     Install:  cp to ~/Library/LaunchAgents/ then
+               launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.openclaw.fiction-island.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>ai.openclaw.fiction-island</string>
+    <key>Comment</key><string>Fiction Orchestra — Mac cockpit (live board + notifications + ops)</string>
+    <key>RunAtLoad</key><true/>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/bin/open</string>
+      <string>-a</string>
+      <string>/Applications/Fiction Island.app</string>
+    </array>
+    <key>StandardOutPath</key><string>/Users/ethan/fiction/orchestration/logs/island.out.log</string>
+    <key>StandardErrorPath</key><string>/Users/ethan/fiction/orchestration/logs/island.err.log</string>
+  </dict>
+</plist>

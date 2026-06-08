@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# conduct — the Orchestration Conductor (ORCHESTRATION.md).
+# Hand it a raw idea / messy draft / craft question; it classifies intent, picks the
+# right specialist models, has them collaborate over the filesystem, and returns a
+# composed artifact in drafts/. Host-side Claude (Sonnet plans, Opus synthesizes).
+#
+# Usage:
+#   conduct "<request>" [target-paths...]      auto-classify -> plan -> run
+#   conduct --play <name> [targets...]         force a play template (no planner LLM)
+#                                              names: idea|adversarial-review|design-review|scene-draft|continuity|voice|explore
+#   conduct --play <name> --note "<focus>" …   force a play AND steer its lanes (e.g. "focus on Jon")
+#   conduct --dry-run ...                       emit plan.json + scaffold, do NOT dispatch models
+#   conduct --status <job-id>                   reprint a prior job's status table
+#   conduct --timeout <s> ...                   per-step timeout (default 300s; grok 420s)
+#
+# Output: drafts/<artifact>.md  (+ audit trail under drafts/.conduct/<job>/)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/common.sh"; . "$HERE/lib/context.sh"; . "$HERE/lib/run-model.sh"; . "$HERE/lib/workflow.sh"; . "$HERE/lib/usage.sh"; . "$HERE/lib/conduct.sh"
+set +e +u +o pipefail   # long-running orchestrator: tolerate empty arrays + per-step failures
+
+CONDUCT_DIR="$ROOT/drafts/.conduct"
+
+# Janitor: sweep stale SFW sandbox mirrors leaked by previously KILLED/timed-out
+# agentic lanes. run_model removes its sandbox on clean exit, but a kill (timeout,
+# client disconnect) skips that inline cleanup, leaving a full codex+manuscript copy
+# in TMPDIR. Only touch dirs >30min old, so a concurrent in-flight run is never hit.
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'sfw-sbx.*' -type d -mmin +30 -exec rm -rf {} + 2>/dev/null || true
+
+PLAY=""; DRYRUN=0; REQUEST=""; STEER=""; TARGETS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --play)    PLAY="${2:?--play needs a name}"; shift 2;;
+    --note)    STEER="${2:?--note needs text}"; shift 2;;
+    --dry-run) DRYRUN=1; shift;;
+    --timeout) CONDUCT_STEP_TIMEOUT="${2:?--timeout needs seconds}"; shift 2;;
+    --status)
+      jid="${2:?--status needs a job-id}"; jd="$CONDUCT_DIR/$jid"
+      [ -d "$jd" ] || die "no such job: $jid (under drafts/.conduct/)"
+      [ -f "$jd/plan.json" ] || die "job $jid has no plan.json"
+      printf 'Job %s\n' "$jid"; status_table "$jd" "$jd/plan.json"; exit 0;;
+    --usage)
+      jid="${2:?--usage needs a job-id}"; jd="$CONDUCT_DIR/$jid"
+      [ -d "$jd" ] || die "no such job: $jid (under drafts/.conduct/)"
+      printf 'Job %s — usage by lane:\n' "$jid"; conduct_usage_summary_ro "$jd"; exit 0;;
+    --) shift; break;;
+    -*) die "unknown flag: $1";;
+    *)  if [ -z "$REQUEST" ] && [ -z "$PLAY" ]; then REQUEST="$1"
+        elif [ -z "$REQUEST" ] && [ -n "$PLAY" ]; then TARGETS+=("$1")
+        else TARGETS+=("$1"); fi
+        shift;;
+  esac
+done
+# any args after `--`
+while [ "$#" -gt 0 ]; do TARGETS+=("$1"); shift; done
+
+# absolutize target paths (accept repo-relative or absolute)
+i=0; for t in "${TARGETS[@]}"; do
+  case "$t" in /*) :;; *) [ -e "$t" ] || t="$ROOT/$t";; esac
+  TARGETS[$i]="$t"; i=$((i+1))
+done
+
+# validate every PROVIDED target resolves to a real file/dir. Without this a typo'd
+# target silently feeds an empty context (context.sh skips missing files) and the
+# lane confabulates a confident result instead of failing — see DEVLOG S22 finding.
+# Plays that take no targets (e.g. idea) are unaffected: the loop is a no-op.
+for t in "${TARGETS[@]}"; do
+  [ -e "$t" ] || die "target not found: ${t#"$ROOT"/} (check the path is repo-relative and exists)"
+done
+
+if [ -n "$PLAY" ]; then
+  SLUG="$(slugify "${TARGETS[0]:+$(basename "${TARGETS[0]%.md}")}")"
+  [ -n "$SLUG" ] || SLUG="$PLAY"
+  JOBPREFIX="$PLAY-"
+elif [ -n "$REQUEST" ]; then
+  SLUG="$(slugify "$REQUEST")"; [ -n "$SLUG" ] || SLUG="conduct"
+  JOBPREFIX=""
+else
+  die "usage: conduct \"<request>\" [targets...]   |   conduct --play <name> [targets...]"
+fi
+
+JOB="${JOBPREFIX}$SLUG-$(short_id)"
+JD="$CONDUCT_DIR/$JOB"
+mkdir -p "$JD"
+PLAN="$JD/plan.json"
+info "Conductor job: $JOB"
+info "Job dir: ${JD#"$ROOT"/}"
+
+# ---- 1. PLAN ----
+if [ -n "$PLAY" ]; then
+  CONDUCT_STEER="$STEER" conduct_play_template "$PLAY" "$PLAN" "$SLUG" "${TARGETS[@]}" || die "failed to build play template '$PLAY'"
+  if ! verr="$(_pj "$PLAN" validate)"; then die "play template invalid:\n$verr"; fi
+  ok "Play template '$PLAY' → ${PLAN#"$ROOT"/}"
+else
+  conduct_plan "$PLAN" "$REQUEST" "${TARGETS[@]}"
+fi
+
+# ---- dry-run stops here ----
+if [ "$DRYRUN" -eq 1 ]; then
+  info "--dry-run: plan only, not dispatching."
+  python3 -m json.tool "$PLAN"
+  ok "Dry run complete. Plan: ${PLAN#"$ROOT"/}"
+  exit 0
+fi
+
+# ---- 2/3. DISPATCH (background + collect, with lifecycle guarantees) ----
+dispatch_plan "$JD" "$PLAN"; DISPATCH_RC=$?
+
+# ---- 4. FINALIZE ----
+ART="$(conduct_finalize "$JD" "$PLAN" "$SLUG")"; FIN_RC=$?
+
+printf '\n' >&2
+info "Final status:"; status_table "$JD" "$PLAN" >&2
+printf '\n' >&2
+info "Usage by lane (this run):" >&2; conduct_usage_summary_ro "$JD" >&2
+if [ "$DISPATCH_RC" -ne 0 ]; then
+  warn "Some steps did not complete cleanly — the artifact may be partial (see ${JD#"$ROOT"/})."
+fi
+ok "Artifact → ${ART#"$ROOT"/}"
+printf '%s\n' "$ART"
+
+# non-zero if dispatch had failures or finalize couldn't write a real artifact
+[ "$DISPATCH_RC" -eq 0 ] && [ "$FIN_RC" -eq 0 ]

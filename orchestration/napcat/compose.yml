@@ -1,0 +1,41 @@
+# NapCat — QQ (OneBot 11) front-end for the OpenClaw agent. Runs on ARCH, beside
+# agent-lab-openclaw. The openclaw-onebot channel plugin (a WS *client*) connects IN
+# to NapCat's WS server + HTTP API; inbound QQ messages then flow through OpenClaw's
+# normal agent + command-dispatch pipeline (general Q&A, task delegation, /conduct).
+#
+# SECURITY (non-negotiable — a leaked NapCat port has caused mass QQ-group bans):
+#   - ALL ports bound to 127.0.0.1 only. agent-lab-openclaw is network_mode:host, so it
+#     reaches these at 127.0.0.1. NOTHING is published to the public/LAN interface.
+#   - Reach the WebUI (:6099) only via an SSH tunnel from your laptop.
+#   - Non-empty OneBot access token + a random WebUI token (NEVER the default `napcat`).
+#   - BURNER QQ account only — never a personal/primary number (Tencent risk-control).
+#
+# Deploy: ship this dir to arch, create ./.env (see .env.example), then
+#   docker compose -f compose.yml up -d
+# First run: open http://127.0.0.1:6099/webui over an SSH tunnel, scan the QR with the
+# burner QQ. Session persists in ./ntqq across restarts.
+services:
+  napcat:
+    # Digest-pinned (bundles a specific NTQQ build). Re-pin when bumping the tag:
+    # `docker pull mlikiowa/napcat-docker:<tag>` then copy the printed Digest.
+    image: mlikiowa/napcat-docker:v4.18.5@sha256:50bada3f8f5f88e4e9a5bf5184a213ae1931a621d71d69957d145d1c78c4171f
+    container_name: napcat
+    env_file:
+      - ./.env                      # NAPCAT_UID/GID, WEBUI_TOKEN, ACCOUNT (see .env.example)
+    ports:
+      # HTTP host-side is 3010, NOT 3000 — Grafana (network_mode:host) already owns
+      # arch 127.0.0.1:3000. Container stays 3000 internally; openclaw httpUrl=:3010.
+      - "127.0.0.1:3010:3000"       # OneBot 11 HTTP API  (openclaw httpUrl → :3010)
+      - "127.0.0.1:3001:3001"       # OneBot 11 WS server  (openclaw wsUrl  → :3001)
+      - "127.0.0.1:6099:6099"       # WebUI — login + config (SSH-tunnel only)
+    volumes:
+      - ./ntqq:/app/.config/QQ      # QQ login/session — persisted (gitignored)
+      - ./config:/app/napcat/config # NapCat + OneBot config (gitignored; see config/onebot11.example.json)
+      - ./shared:/shared            # media staging shared with the openclaw plugin (sharedDir)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:6099/ >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

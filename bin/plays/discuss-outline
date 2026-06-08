@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# discuss-outline — hold a structural conversation about codex/outline.md
+# (plot holes, pacing, subplots). Structure is Codex/GPT's lane.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/../lib/common.sh"; . "$HERE/../lib/context.sh"; . "$HERE/../lib/run-model.sh"; . "$HERE/../lib/workflow.sh"
+
+OUTLINE="$ROOT/codex/outline.md"
+[ -f "$OUTLINE" ] || die "no codex/outline.md to discuss"
+
+read -r -d '' TASK <<'EOF' || true
+Hold a structural conversation about this outline. Be concrete and reference specific beats:
+- **Plot holes / logic gaps** — where cause→effect breaks.
+- **Pacing** — sagging or rushed acts; midpoint and act-break strength.
+- **Subplots** — which are underdeveloped, unresolved, or not threaded into the main line.
+- **Stakes & escalation** — does tension rise?
+End with the **3 highest-leverage structural fixes**, ranked, each with the first concrete step.
+EOF
+
+do_workflow "discuss-outline" "structure" "outline" "$TASK" "$OUTLINE"

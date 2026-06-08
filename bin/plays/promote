@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# promote <src> <manuscript-dest> — move author-accepted prose into the canonical
+# manuscript/. This is the ONLY sanctioned way text enters manuscript/. Refuses to
+# promote an explicit file to a path that lacks the .explicit.md tier marker.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$HERE/../lib/common.sh"
+
+[ "$#" -eq 2 ] || die "usage: promote <src-file> <manuscript/chNN/sNN.md>"
+SRC="$1"; DEST="$2"
+[ -f "$SRC" ] || die "source not found: $SRC"
+case "$DEST" in manuscript/*|"$ROOT"/manuscript/*) : ;; *) die "destination must be inside manuscript/";; esac
+
+# tier sanity: explicit content must keep the .explicit.md tier so the firewall holds
+if grep -qF "$NSFW_MARKER" "$SRC" && ! is_explicit_file "$DEST"; then
+  die "refusing: source is explicit but destination isn't *.explicit.md — that would break the firewall."
+fi
+
+mkdir -p "$(dirname "$ROOT/$DEST" 2>/dev/null || dirname "$DEST")"
+DEST_ABS="$DEST"; case "$DEST" in "$ROOT"/*) :;; *) DEST_ABS="$ROOT/$DEST";; esac
+mkdir -p "$(dirname "$DEST_ABS")"
+cp "$SRC" "$DEST_ABS"
+ok "Promoted → ${DEST_ABS#"$ROOT"/}"
+warn "Review in Nimbalyst, then: git add '${DEST_ABS#"$ROOT"/}' && git commit"
+if is_explicit_file "$DEST_ABS"; then
+  SYN="${DEST_ABS%.explicit.md}.synopsis.md"
+  [ -f "$SYN" ] || warn "Reminder: create the SFW synopsis ${SYN#"$ROOT"/} so moderated models keep continuity."
+fi

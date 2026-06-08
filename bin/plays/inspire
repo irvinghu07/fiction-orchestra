@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# inspire <scene-path> [--nsfw] — surface ideas/angles for a stuck scene given the
+# surrounding context. Brainstorming → Grok. (Explicit scenes route to Grok anyway.)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/../lib/common.sh"; . "$HERE/../lib/context.sh"; . "$HERE/../lib/run-model.sh"; . "$HERE/../lib/workflow.sh"
+
+NSFW=0; SCENE=""
+while [ "$#" -gt 0 ]; do case "$1" in
+  --nsfw) NSFW=1;; -*) die "unknown flag: $1";; *) SCENE="$1";;
+esac; shift; done
+[ -n "$SCENE" ] || die "usage: inspire <path/to/scene.md> [--nsfw]"
+[ -f "$SCENE" ] || die "scene not found: $SCENE"
+SCENE="$(cd "$(dirname "$SCENE")" && pwd)/$(basename "$SCENE")"
+
+# inspiration is Grok's lane; an explicit target stays on Grok regardless.
+ROLE=inspire   # resolves to grok (unmoderated)
+
+read -r -d '' TASK <<'EOF' || true
+The author is stuck on this scene. Surface 5–8 DISTINCT ideas to break the block —
+angles, reversals, sensory details, subtext, or a line of dialogue that only these
+characters would say. Range from safe to bold. For each: one line on why it fits the
+established characters and world. Do NOT draft full prose unless explicitly asked.
+EOF
+
+do_workflow "inspire" "$ROLE" "$(slugify "$(basename "${SCENE%.md}")")" "$TASK" "$SCENE"

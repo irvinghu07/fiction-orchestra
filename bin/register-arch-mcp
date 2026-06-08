@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# register-arch-mcp — register the Mac host-mcp server in the arch OpenClaw
+# (agent-lab-openclaw) as a Streamable-HTTP MCP server named "fiction-host".
+#
+# The container rootfs is read-only, so we DON'T `docker cp` (that writes through
+# the rootfs layer and fails). Instead we pipe the config JSON over SSH stdin into
+# `docker exec -i`, write it to a rw mount inside the container, and hand it to
+# `openclaw mcp set` from there. The bearer token never appears on a command line
+# at the ssh/docker layer (it travels via stdin) and is removed right after.
+#
+# Usage:  bin/register-arch-mcp            register/update + list
+#         bin/register-arch-mcp --unset    remove the fiction-host MCP server
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+ARCH="${ARCH_HOST:-arch}"
+CTR="${OPENCLAW_CONTAINER:-agent-lab-openclaw}"
+CRW="${OPENCLAW_SCRATCH:-/workspace/scratch}"   # a rw mount inside the read-only container
+NAME="fiction-host"
+CFILE="$CRW/.fiction-mcp.json"
+
+if [ "${1:-}" = "--unset" ]; then
+  ssh "$ARCH" "docker exec $CTR openclaw mcp unset $NAME; docker exec $CTR openclaw mcp list"
+  echo "unset $NAME"
+  exit 0
+fi
+
+TOK="$(grep '^HOST_MCP_TOKEN=' "$ROOT/.env" | cut -d= -f2)"
+[ -n "$TOK" ] || { echo "ERROR: HOST_MCP_TOKEN not in $ROOT/.env" >&2; exit 1; }
+TS_IP="$(tailscale ip -4 2>/dev/null | head -1)"
+[ -n "$TS_IP" ] || { echo "ERROR: no Tailscale IP (is tailscale up?)" >&2; exit 1; }
+URL="http://$TS_IP:8765/mcp"
+
+LOCAL_TMP="$(mktemp)"; trap 'rm -f "$LOCAL_TMP"' EXIT
+# timeout/connectTimeout are SECONDS (per OpenClaw docs). 1800s matches the conductor's
+# own job cap — a multi-lane conduct (Grok ~2-3min + synthesis) must not be client-cancelled.
+printf '{"url":"%s","transport":"streamable-http","connectTimeout":20,"timeout":1800,"headers":{"Authorization":"Bearer %s"}}' "$URL" "$TOK" > "$LOCAL_TMP"
+
+echo "registering '$NAME' -> $URL on $ARCH:$CTR (rw path $CRW) …"
+# stdin: local JSON → ssh → docker exec -i → container sh → cat > file → set → rm
+ssh "$ARCH" "docker exec -i $CTR sh -lc 'umask 077; cat > $CFILE && openclaw mcp set $NAME \"\$(cat $CFILE)\" && rm -f $CFILE && echo OK_SET'" < "$LOCAL_TMP"
+echo '--- openclaw mcp list ---'
+ssh "$ARCH" "docker exec $CTR openclaw mcp list"
+echo "done. If the conductor doesn't see the tool yet, restart the agent: ssh $ARCH 'docker restart $CTR'"

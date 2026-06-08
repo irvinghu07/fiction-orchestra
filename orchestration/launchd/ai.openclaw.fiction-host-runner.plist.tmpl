@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Template. Rendered by bin/host-runnerctl install → ~/Library/LaunchAgents/.
+     Tokens (__HOME__ __REPO__ __TMPDIR__ __PATH__) are filled at install time;
+     __PATH__ is computed from `command -v` so `grok` (nvm-versioned bin) resolves.
+     No secrets here — the DeepSeek key is self-sourced from .env by run-model.sh. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>ai.openclaw.fiction-host-runner</string>
+    <key>Comment</key><string>Fiction Orchestra — OpenClaw bridge host-runner (always-on)</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>5</integer>
+    <key>ProcessType</key><string>Background</string>
+    <key>WorkingDirectory</key><string>__REPO__</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>__REPO__/bin/host-runner</string>
+    </array>
+    <key>StandardOutPath</key><string>__REPO__/orchestration/logs/host-runner.out.log</string>
+    <key>StandardErrorPath</key><string>__REPO__/orchestration/logs/host-runner.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>HOME</key><string>__HOME__</string>
+      <key>TMPDIR</key><string>__TMPDIR__</string>
+      <key>PATH</key><string>__PATH__</string>
+      <key>NODE_EXTRA_CA_CERTS</key><string>/etc/ssl/cert.pem</string>
+      <key>NODE_USE_SYSTEM_CA</key><string>1</string>
+    </dict>
+  </dict>
+</plist>

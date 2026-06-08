@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# audit-scene <scene-path> — check a finished scene for out-of-character dialogue,
+# continuity errors, and pacing. SFW scenes → Claude. *.explicit.md → Grok (Claude
+# never sees explicit prose). Writes notes (+ optional diff) to drafts/.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/../lib/common.sh"; . "$HERE/../lib/context.sh"; . "$HERE/../lib/run-model.sh"; . "$HERE/../lib/workflow.sh"
+
+[ "$#" -ge 1 ] || die "usage: audit-scene <path/to/scene.md>"
+SCENE="$1"
+[ -f "$SCENE" ] || die "scene not found: $SCENE"
+SCENE="$(cd "$(dirname "$SCENE")" && pwd)/$(basename "$SCENE")"  # absolutize
+
+ROLE=audit
+if is_explicit_file "$SCENE"; then
+  ROLE=nsfw
+  warn "Explicit scene detected → routing to Grok (the only NSFW-capable model)."
+fi
+
+read -r -d '' TASK <<'EOF' || true
+Audit this finished scene. Return clearly separated sections:
+1. **Out-of-character dialogue** — lines that clash with a character's voice card (quote the line, name the character, say why).
+2. **Continuity errors** — contradictions with the codex/ bible (cite the codex file).
+3. **Pacing** — drags, rushes, or flat beats, with the passage they apply to.
+4. **Optional suggested revision** — a diff for the single weakest passage ONLY. Do not rewrite the whole scene.
+If something isn't established in the bible, say "not in the bible" rather than inventing canon.
+EOF
+
+do_workflow "audit-scene" "$ROLE" "$(slugify "$(basename "${SCENE%.md}")")" "$TASK" "$SCENE"

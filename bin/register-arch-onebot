@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# register-arch-onebot — install the openclaw-onebot channel plugin into the arch
+# OpenClaw (agent-lab-openclaw) and wire the `onebot` channel to the NapCat backend,
+# so QQ becomes a front-end to the whole agent (general Q&A + task delegation + the
+# fiction /conduct command). Mirrors bin/register-arch-mcp's discipline: the access
+# token travels via stdin, never on a command line.
+#
+# agent-lab-openclaw is a SHARED container (network_mode:host). NapCat publishes on the
+# arch loopback (127.0.0.1:3000 http, :3001 ws), so the host-networked openclaw reaches
+# it there. The container restart is DISRUPTIVE to the shared lab — it is gated behind
+# --restart and never implied.
+#
+# Usage:
+#   bin/register-arch-onebot --install        install + enable the plugin (no config, no restart)
+#   bin/register-arch-onebot --config         set channels.onebot.* (token via stdin, allowFrom from .env)
+#   bin/register-arch-onebot --verify         inspect plugin + list channels + commands.list
+#   bin/register-arch-onebot --restart        docker restart agent-lab-openclaw (DISRUPTIVE; do when ready)
+#   bin/register-arch-onebot --uninstall      disable + uninstall the plugin
+#   bin/register-arch-onebot                  = --install --config --verify (still NO restart)
+#
+# .env keys (repo root): NAPCAT_ACCESS_TOKEN (required for --config), ALLOW_QQ (your
+# personal QQ id, e.g. 12345; required for --config), optional ONEBOT_WS_URL / ONEBOT_HTTP_URL.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+ARCH="${ARCH_HOST:-arch}"
+CTR="${OPENCLAW_CONTAINER:-agent-lab-openclaw}"
+PLUGIN_ID="openclaw-onebot"
+CLAWHUB="clawhub:openclaw-onebot-plugin"
+WS_URL="${ONEBOT_WS_URL:-ws://127.0.0.1:3001}"
+HTTP_URL="${ONEBOT_HTTP_URL:-http://127.0.0.1:3010}"   # 3010, not 3000 (Grafana owns arch :3000)
+
+env_get() { grep -E "^$1=" "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'; }
+
+do_install() {
+  echo "== installing $PLUGIN_ID on $ARCH:$CTR (clawhub) =="
+  # GOTCHA (conduct-runbook #1): /home/node is a READ-ONLY fs (only .openclaw is a rw
+  # mount), so the installer's `npm install` of the plugin's `ws` dep can't create
+  # /home/node/.npm. Redirect the npm cache to the writable scratch mount. Keep HOME
+  # default so the plugin installs into the gateway's extensions dir.
+  ssh "$ARCH" "docker exec $CTR sh -lc 'export npm_config_cache=/workspace/scratch/.npm; openclaw plugins install $CLAWHUB && openclaw plugins enable $PLUGIN_ID'" \
+    && echo "installed + enabled. (gateway restart deferred to --restart)" \
+    || { echo "!! clawhub install failed — fall back to source build (see README §Fallback)"; return 1; }
+}
+
+do_config() {
+  local tok allow allow_json C
+  tok="$(env_get NAPCAT_ACCESS_TOKEN)"
+  allow="$(env_get ALLOW_QQ)"
+  [ -n "$tok" ] || { echo "ERROR: NAPCAT_ACCESS_TOKEN not in $ROOT/.env" >&2; exit 1; }
+  # NOTE: this plugin's channelConfigs schema does NOT accept dmPolicy/groupPolicy —
+  # setting them fails "must NOT have additional properties". Access is governed by
+  # allowFrom alone: ["*"] = OPEN (anyone who DMs the burner drives the agent — real
+  # Mac model spend + draft egress), ["private:<qq>"] = gated to you.
+  if [ -z "$allow" ] || [ "$allow" = "*" ]; then
+    allow_json='["*"]'
+    echo "== configuring channels.onebot — ⚠️ OPEN (allowFrom=[\"*\"]) =="
+  else
+    allow_json="[\"private:$allow\"]"
+    echo "== configuring channels.onebot — gated (allowFrom=[private:$allow]) =="
+  fi
+  # Per-key calls (robust; a fragile multi-line && chain silently aborted mid-way).
+  C="docker exec $CTR openclaw config set"
+  ssh "$ARCH" "$C channels.onebot.enabled true"
+  ssh "$ARCH" "$C channels.onebot.wsUrl $WS_URL"
+  ssh "$ARCH" "$C channels.onebot.httpUrl $HTTP_URL"
+  ssh "$ARCH" "$C channels.onebot.sharedDir /shared"
+  ssh "$ARCH" "$C channels.onebot.containerSharedDir /shared"
+  ssh "$ARCH" "$C channels.onebot.allowFrom '$allow_json'"
+  # access token via stdin so it never appears on a command line / in logs.
+  printf '%s' "$tok" | ssh "$ARCH" "docker exec -i $CTR sh -lc 'T=\$(cat); openclaw config set channels.onebot.accessToken \"\$T\"'"
+  echo "channel configured. (token via stdin) — restart the gateway to apply: $0 --restart"
+}
+
+do_verify() {
+  echo "== plugin runtime =="; ssh "$ARCH" "docker exec $CTR openclaw plugins inspect $PLUGIN_ID --runtime --json" 2>&1 | head -40
+  echo "== channels =="; ssh "$ARCH" "docker exec $CTR openclaw channels list" 2>&1 | head -30
+  echo "== /conduct present on dispatch surface =="; ssh "$ARCH" "docker exec $CTR openclaw gateway call commands.list" 2>&1 | grep -i conduct || echo "(conduct not listed — restart may be needed)"
+}
+
+do_restart() {
+  echo "== DISRUPTIVE: restarting $CTR (shared lab) =="
+  ssh "$ARCH" "docker restart $CTR" && echo "restarted."
+}
+
+do_uninstall() {
+  ssh "$ARCH" "docker exec $CTR sh -lc 'openclaw plugins disable $PLUGIN_ID; openclaw plugins uninstall $PLUGIN_ID'" && echo "uninstalled."
+}
+
+case "${1:-}" in
+  --install)   do_install ;;
+  --config)    do_config ;;
+  --verify)    do_verify ;;
+  --restart)   do_restart ;;
+  --uninstall) do_uninstall ;;
+  "")          do_install && do_config && do_verify
+               echo; echo ">> NOT restarted. When ready (and the shared lab can blip): bin/register-arch-onebot --restart" ;;
+  *) echo "unknown flag: $1 (see header for usage)" >&2; exit 2 ;;
+esac

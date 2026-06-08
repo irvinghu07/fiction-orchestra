@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Fiction Island</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <!-- Pill: always visible, drag region -->
+      <header data-tauri-drag-region>
+        <span class="dot" id="dot"></span>
+        <span class="mark" data-tauri-drag-region>🎼</span>
+        <span class="title" data-tauri-drag-region>APHRODITE</span>
+        <span class="badge" id="state">idle</span>
+        <button class="chev" id="chev" title="expand">▾</button>
+      </header>
+
+      <div class="sub">
+        <span class="play" id="play">—</span>
+        <span class="prog" id="lanecount"></span>
+        <span class="conn" id="conn"><i></i><b>offline</b></span>
+      </div>
+      <div class="bar"><span id="barfill"></span></div>
+
+      <main id="panel" hidden>
+        <section class="board">
+          <div class="lanes" id="lanes"><div class="empty">no active run</div></div>
+          <a class="artifact" id="artifact" hidden><span class="arr">→</span><span id="artpath"></span></a>
+        </section>
+
+        <section class="ops">
+          <div class="row">
+            <span class="lbl">Tailscale</span>
+            <span class="val" id="ts">checking…</span>
+            <button id="tsup">Bring up</button>
+          </div>
+          <div class="row">
+            <span class="lbl">host-mcp</span>
+            <span class="val" id="hm">—</span>
+            <button id="hmrestart">Restart</button>
+          </div>
+          <div class="row btns">
+            <button id="openclaw">Open OpenClaw <span class="ext">↗</span></button>
+            <button id="doctor">Run doctor</button>
+          </div>
+          <pre class="out" id="out" hidden></pre>
+        </section>
+
+        <section class="settings">
+          <details>
+            <summary>Settings</summary>
+            <label>host-mcp URL<input id="cfgHost" type="text" /></label>
+            <label>OpenClaw URL<input id="cfgClaw" type="text" /></label>
+            <button id="cfgSave">Save &amp; reconnect</button>
+          </details>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

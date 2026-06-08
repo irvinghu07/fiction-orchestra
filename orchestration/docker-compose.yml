@@ -1,0 +1,51 @@
+# ⚠️ FALLBACK PATH (not the live route as of 2026-06-03). The conductor now runs on arch via the MCP bridge
+#    (orchestration/host-mcp + the fiction-host MCP registration). This Mac-Docker container is the dormant
+#    fallback, kept intact for rollback only. See DEPLOY.md §rollback.
+# OpenClaw conductor — Mac Docker sandbox (Layer 2).
+# Firewall posture: the container gets the BRIDGE + SFW context only. It does NOT mount
+# manuscript/ — explicit prose never enters the container. First-party model calls go
+# host-side via bin/host-runner (the trust boundary); the container calls it via `bridge-client`.
+services:
+  openclaw:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: fiction-openclaw
+    # Loads OPENCLAW_GATEWAY_TOKEN + DEEPSEEK_* straight into the container env.
+    # Path is relative to this compose file (orchestration/), so ../.env = repo-root .env.
+    env_file:
+      - ../.env
+    ports:
+      - "127.0.0.1:19001:19001"  # gateway, reachable from the Mac at ws://127.0.0.1:19001
+    volumes:
+      - ./bridge:/workspace/bridge                       # job exchange with host-runner (rw)
+      - ../codex:/workspace/codex:ro                     # SFW story bible for the conductor's reasoning
+      - ./roles:/workspace/roles:ro                      # role definitions
+      - ./bridge-client.sh:/usr/local/bin/bridge-client:ro
+      - ./openclaw/config:/home/node/.openclaw         # persist OpenClaw config (model catalog, identity)
+      - ./openclaw/plugins:/workspace/plugins:ro         # /conduct plugin source (entry ②); build+install per its README
+    environment:
+      - BRIDGE_DIR=/workspace/bridge
+      # Docker injects the Mac's loopback proxy (127.0.0.1:10809) from ~/.docker/config.json,
+      # which is a dead address inside the container. The container reaches the internet directly
+      # via Docker NAT, so clear the proxy so OpenClaw's fetch (DeepSeek etc.) works.
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - ALL_PROXY=
+      - all_proxy=
+      - NO_PROXY=*
+      - no_proxy=*
+    # Run the gateway authenticated by the shared token. If the token is unset (or the gateway
+    # exits for any reason), hold the container so `docker exec … bridge-client` still works.
+    command: ["sh","-lc","node openclaw.mjs gateway --allow-unconfigured --auth token --bind lan --port 19001; echo \"gateway exited ($?); holding container for bridge use\"; exec tail -f /dev/null"]
+    # The image's built-in HEALTHCHECK probes 127.0.0.1:18789/healthz, but this gateway serves
+    # /healthz on 19001 (the --port we run it on); nothing listens on 18789, so the built-in check
+    # pins the container at "unhealthy" forever. Verified live on the host: curl 18789/healthz -> 000,
+    # curl 19001/healthz -> 200. Override to the real port. (DEVLOG Stage-1 hygiene.)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:19001/healthz || exit 1"]
+      interval: 60s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped

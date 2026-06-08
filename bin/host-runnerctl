@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# host-runnerctl — manage the host-runner + hourly health-check as launchd LaunchAgents.
+# Mirrors the existing ai.openclaw.gateway service so both halves of the OpenClaw bridge
+# come up together at login. The plists carry no secrets (the DeepSeek key stays in .env).
+#
+# Usage:
+#   bin/host-runnerctl install              # render plists → ~/Library/LaunchAgents, load both
+#   bin/host-runnerctl uninstall            # unload + remove both
+#   bin/host-runnerctl start|stop|restart   # the runner agent
+#   bin/host-runnerctl status               # state of both agents + latest health.json
+#   bin/host-runnerctl logs [runner|runner-err|health]
+#   bin/host-runnerctl health pause|resume|now [--force]
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/common.sh"
+set +eu +o pipefail   # launchctl returns nonzero for benign cases; handle errors explicitly (and tolerate empty arrays under bash 3.2)
+
+LA="$HOME/Library/LaunchAgents"
+TMPL_DIR="$ROOT/orchestration/launchd"
+RUNNER_LABEL="ai.openclaw.fiction-host-runner"
+HEALTH_LABEL="ai.openclaw.fiction-healthcheck"
+MCP_LABEL="ai.openclaw.fiction-host-mcp"
+DOMAIN="gui/$(id -u)"
+PAUSE="$ROOT/orchestration/.health-paused"
+HJSON="$ROOT/orchestration/logs/health.json"
+
+# Union of the dirs holding each first-party CLI (so bare-name calls resolve under launchd),
+# computed live so a node upgrade (grok lives in the nvm-versioned bin) can't break it.
+compute_path() {
+  local dirs=() c p d
+  for c in claude codex grok agy node python3; do
+    p="$(command -v "$c" 2>/dev/null)" || continue
+    d="$(cd "$(dirname "$p")" 2>/dev/null && pwd)" || continue
+    case ":${dirs[*]}:" in *":$d:"*) ;; *) dirs+=("$d");; esac
+  done
+  for d in /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
+    case ":${dirs[*]}:" in *":$d:"*) ;; *) dirs+=("$d");; esac
+  done
+  local IFS=:; echo "${dirs[*]}"
+}
+
+render() { # render TMPL DEST  (| delimiter — values contain / but never |)
+  local tmpl="$1" dest="$2"
+  sed -e "s|__HOME__|$HOME|g" -e "s|__REPO__|$ROOT|g" \
+      -e "s|__TMPDIR__|${TMPDIR:-/tmp}|g" -e "s|__PATH__|$PATHVAL|g" "$tmpl" > "$dest"
+}
+
+stop_manual() { # kill any hand-started runner so two don't double-drain the inbox
+  local pids; pids="$(pgrep -f 'bin/host-runner($| )' 2>/dev/null)"
+  [ -n "$pids" ] && { warn "stopping stray manual host-runner: $pids"; kill $pids 2>/dev/null; sleep 1; }
+  return 0
+}
+
+load_agent() { # load_agent LABEL
+  local label="$1" plist="$LA/$1.plist"
+  launchctl bootout "$DOMAIN/$label" 2>/dev/null
+  if launchctl bootstrap "$DOMAIN" "$plist" 2>/dev/null; then ok "loaded $label"
+  else
+    launchctl unload "$plist" 2>/dev/null
+    if launchctl load "$plist" 2>/dev/null; then ok "loaded $label (legacy)"
+    else die "failed to load $label — check $plist"; fi
+  fi
+}
+
+unload_agent() { # unload_agent LABEL
+  local label="$1" plist="$LA/$1.plist"
+  launchctl bootout "$DOMAIN/$label" 2>/dev/null || launchctl unload "$plist" 2>/dev/null
+  ok "unloaded $label"
+}
+
+cmd="${1:-status}"; shift 2>/dev/null
+case "$cmd" in
+  install)
+    [ -d "$TMPL_DIR" ] || die "missing templates: $TMPL_DIR"
+    mkdir -p "$LA" "$ROOT/orchestration/logs"
+    stop_manual
+    PATHVAL="$(compute_path)"; info "launchd PATH = $PATHVAL"
+    render "$TMPL_DIR/$RUNNER_LABEL.plist.tmpl" "$LA/$RUNNER_LABEL.plist"
+    render "$TMPL_DIR/$HEALTH_LABEL.plist.tmpl" "$LA/$HEALTH_LABEL.plist"
+    [ -f "$TMPL_DIR/$MCP_LABEL.plist.tmpl" ] && render "$TMPL_DIR/$MCP_LABEL.plist.tmpl" "$LA/$MCP_LABEL.plist"
+    load_agent "$RUNNER_LABEL"
+    load_agent "$HEALTH_LABEL"
+    [ -f "$LA/$MCP_LABEL.plist" ] && load_agent "$MCP_LABEL"
+    echo; "$0" status
+    ;;
+  uninstall)
+    unload_agent "$RUNNER_LABEL"; unload_agent "$HEALTH_LABEL"; unload_agent "$MCP_LABEL"
+    rm -f "$LA/$RUNNER_LABEL.plist" "$LA/$HEALTH_LABEL.plist" "$LA/$MCP_LABEL.plist"
+    ok "removed plists from $LA"
+    ;;
+  start)   load_agent "$RUNNER_LABEL" ;;
+  stop)    launchctl bootout "$DOMAIN/$RUNNER_LABEL" 2>/dev/null && ok "stopped runner" || warn "runner not loaded" ;;
+  restart) launchctl kickstart -k "$DOMAIN/$RUNNER_LABEL" 2>/dev/null && ok "restarted runner" || die "restart failed (is it installed?)" ;;
+  status)
+    info "== launchd agents =="
+    launchctl list 2>/dev/null | grep -E 'fiction-(host-runner|healthcheck|host-mcp)' || echo "  (no agents loaded — run: bin/host-runnerctl install)"
+    echo; info "== stray manual runner =="
+    managed="$(launchctl list 2>/dev/null | awk '$3=="'"$RUNNER_LABEL"'"{print $1}')"
+    stray="$(pgrep -f 'bin/host-runner($| )' 2>/dev/null | grep -vx "${managed:-x}")"
+    if [ -n "$stray" ]; then echo "  $stray  ← NOT launchd-managed; stop it to avoid double-draining"
+    elif [ -n "$managed" ] && [ "$managed" != "-" ]; then echo "  (none — pid $managed is launchd-managed ✓)"
+    else echo "  (none)"; fi
+    echo; info "== last health check =="
+    if [ -f "$HJSON" ]; then python3 -m json.tool "$HJSON" 2>/dev/null || cat "$HJSON"; else echo "  (no health.json yet)"; fi
+    if [ -f "$PAUSE" ]; then warn "health checks are PAUSED (bin/host-runnerctl health resume)"; fi
+    :
+    ;;
+  logs)
+    case "${1:-runner}" in
+      runner)     f="$ROOT/orchestration/logs/host-runner.out.log" ;;
+      runner-err) f="$ROOT/orchestration/logs/host-runner.err.log" ;;
+      health)     f="$ROOT/orchestration/logs/health.out.log" ;;
+      *) die "logs target: runner | runner-err | health" ;;
+    esac
+    [ -f "$f" ] || { warn "no log yet: $f"; exit 0; }
+    info "tail -f $f  (Ctrl-C to stop)"; tail -f "$f"
+    ;;
+  health)
+    case "${1:-}" in
+      pause)  touch "$PAUSE"; ok "health checks paused" ;;
+      resume) rm -f "$PAUSE"; ok "health checks resumed" ;;
+      now)    exec "$ROOT/bin/host-runner-health" "${2:-}" ;;
+      *) die "usage: host-runnerctl health {pause|resume|now [--force]}" ;;
+    esac
+    ;;
+  *) die "unknown command: $cmd (try: install|uninstall|start|stop|restart|status|logs|health)" ;;
+esac

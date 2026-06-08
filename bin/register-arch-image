@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# register-arch-image — ship + build + install the `/image` command plugin into the
+# arch OpenClaw (agent-lab-openclaw) and wire it to the Mac host-mcp `image` tool.
+#
+# The shared container does NOT mount the fiction repo (trust boundary), so the plugin
+# SOURCE is shipped via `tar | ssh | docker exec -i` into the rw scratch mount and built
+# in-container with the version-exact toolchain. /home/node is read-only, so HOME + the
+# npm cache are redirected to scratch (same gotcha as bin/register-arch-onebot).
+#
+# The host-mcp bearer token travels via stdin only (never on a command line / in logs).
+# The restart is DISRUPTIVE to the shared lab and is gated behind --restart.
+#
+# Usage:
+#   bin/register-arch-image --ship       tar the plugin source into the container scratch
+#   bin/register-arch-image --build      npm install + build in-container (after --ship)
+#   bin/register-arch-image --install    openclaw plugins install + enable (after --build)
+#   bin/register-arch-image --config     set plugins.entries.image-plugin.config.* (token via stdin)
+#   bin/register-arch-image --verify     inspect plugin + commands.list | grep image
+#   bin/register-arch-image --restart    docker restart agent-lab-openclaw (DISRUPTIVE)
+#   bin/register-arch-image --uninstall  disable + uninstall the plugin
+#   bin/register-arch-image              = --ship --build --install --config --verify (NO restart)
+#
+# .env keys (repo root): HOST_MCP_TOKEN (required for --config). Optional: IMAGE_DEFAULT_PROVIDER (gpt|grok).
+# The image API keys (OPENAI_API_KEY / XAI_API_KEY) live on the MAC .env (host-mcp), NOT here.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+ARCH="${ARCH_HOST:-arch}"
+CTR="${OPENCLAW_CONTAINER:-agent-lab-openclaw}"
+SCRATCH="${OPENCLAW_SCRATCH:-/workspace/scratch}"
+PDIR="$ROOT/orchestration/openclaw/plugins/image"
+DEST="$SCRATCH/image-plugin"
+PLUGIN_ID="image-plugin"
+
+env_get() { grep -E "^$1=" "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'; }
+
+do_ship() {
+  echo "== shipping plugin source → $ARCH:$CTR:$DEST =="
+  tar -C "$PDIR" -czf - src openclaw.plugin.json package.json tsconfig.json README.md \
+    | ssh "$ARCH" "docker exec -i $CTR sh -lc 'rm -rf $DEST && mkdir -p $DEST && tar -xzf - -C $DEST && ls $DEST'"
+}
+
+do_build() {
+  echo "== building in-container (HOME+cache → scratch; /home/node is read-only) =="
+  ssh "$ARCH" "docker exec -w $DEST $CTR sh -lc 'export HOME=$SCRATCH npm_config_cache=$SCRATCH/.npm; npm install --include=dev && npm run build && rm -rf node_modules && echo BUILT'"
+}
+
+do_install() {
+  echo "== installing + enabling $PLUGIN_ID =="
+  ssh "$ARCH" "docker exec $CTR sh -lc 'openclaw plugins install $DEST --force && openclaw plugins enable $PLUGIN_ID'"
+}
+
+do_config() {
+  local tok prov C TS_IP url
+  tok="$(env_get HOST_MCP_TOKEN)"
+  prov="$(env_get IMAGE_DEFAULT_PROVIDER)"
+  [ -n "$tok" ] || { echo "ERROR: HOST_MCP_TOKEN not in $ROOT/.env" >&2; exit 1; }
+  TS_IP="$(tailscale ip -4 2>/dev/null | head -1)"
+  [ -n "$TS_IP" ] || { echo "ERROR: no Tailscale IP (is tailscale up?)" >&2; exit 1; }
+  url="http://$TS_IP:8765/mcp"
+  C="docker exec $CTR openclaw config set"
+  echo "== configuring image-plugin → host-mcp $url =="
+  ssh "$ARCH" "$C plugins.entries.image-plugin.config.hostMcpUrl $url"
+  [ -n "$prov" ] && ssh "$ARCH" "$C plugins.entries.image-plugin.config.defaultProvider $prov"
+  # host-mcp token via stdin so it never appears on a command line / in logs.
+  printf '%s' "$tok" | ssh "$ARCH" "docker exec -i $CTR sh -lc 'T=\$(cat); openclaw config set plugins.entries.image-plugin.config.hostMcpToken \"\$T\"'"
+  echo "configured. (token via stdin) — restart to apply: $0 --restart"
+}
+
+do_verify() {
+  echo "== plugin runtime =="; ssh "$ARCH" "docker exec $CTR openclaw plugins inspect $PLUGIN_ID --runtime --json" 2>&1 | head -30
+  echo "== /image present on dispatch surface =="; ssh "$ARCH" "docker exec $CTR openclaw gateway call commands.list" 2>&1 | grep -i image || echo "(image not listed — restart may be needed)"
+}
+
+do_restart() {
+  echo "== DISRUPTIVE: restarting $CTR (shared lab) =="
+  ssh "$ARCH" "docker restart $CTR" && echo "restarted."
+}
+
+do_uninstall() {
+  ssh "$ARCH" "docker exec $CTR sh -lc 'openclaw plugins disable $PLUGIN_ID; openclaw plugins uninstall $PLUGIN_ID'" && echo "uninstalled."
+}
+
+case "${1:-}" in
+  --ship)      do_ship ;;
+  --build)     do_build ;;
+  --install)   do_install ;;
+  --config)    do_config ;;
+  --verify)    do_verify ;;
+  --restart)   do_restart ;;
+  --uninstall) do_uninstall ;;
+  "")          do_ship && do_build && do_install && do_config && do_verify
+               echo; echo ">> NOT restarted. When ready (and the shared lab can blip): bin/register-arch-image --restart" ;;
+  *) echo "unknown flag: $1 (see header for usage)" >&2; exit 2 ;;
+esac

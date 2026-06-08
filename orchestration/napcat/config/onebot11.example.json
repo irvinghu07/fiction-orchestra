@@ -1,0 +1,36 @@
+{
+  "_comment": "Example NapCat OneBot-11 config. The WebUI (http://127.0.0.1:6099/webui) is the authoritative way to set this; this file documents the shape the openclaw-onebot plugin expects. Live config lives at config/onebot11_<uin>.json (gitignored). Replace <ACCESS_TOKEN> with NAPCAT_ACCESS_TOKEN from .env (must match channels.onebot.accessToken on agent-lab-openclaw). messagePostFormat MUST be 'array'.",
+  "network": {
+    "httpServers": [
+      {
+        "name": "openclaw-http",
+        "enable": true,
+        "host": "0.0.0.0",
+        "port": 3000,
+        "token": "<ACCESS_TOKEN>",
+        "messagePostFormat": "array",
+        "enableCors": false,
+        "debug": false
+      }
+    ],
+    "websocketServers": [
+      {
+        "name": "openclaw-ws",
+        "enable": true,
+        "host": "0.0.0.0",
+        "port": 3001,
+        "token": "<ACCESS_TOKEN>",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "enableForcePushEvent": true,
+        "heartInterval": 30000,
+        "debug": false
+      }
+    ],
+    "httpClients": [],
+    "websocketClients": []
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": false
+}

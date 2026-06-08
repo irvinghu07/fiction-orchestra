@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# propose <topic> [path ...] — put agent output on a draft/<topic> branch so you can
+# review it as a clean diff in Nimbalyst, then merge or discard. Defaults to drafts/.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$HERE/../lib/common.sh"
+
+[ "$#" -ge 1 ] || die "usage: propose <topic> [path ...]"
+TOPIC="$1"; shift
+BRANCH="draft/$(slugify "$TOPIC")"
+PATHS=("$@"); [ "${#PATHS[@]}" -gt 0 ] || PATHS=("drafts/")
+
+cd "$ROOT"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repo (run: git init)"
+BASE="$(git rev-parse --abbrev-ref HEAD)"
+info "Creating branch $BRANCH off $BASE…"
+git switch -c "$BRANCH" 2>/dev/null || git switch "$BRANCH"
+git add -- "${PATHS[@]}"
+if git diff --cached --quiet; then warn "nothing staged under: ${PATHS[*]}"; exit 0; fi
+git commit -q -m "draft: $TOPIC"
+ok "Committed to $BRANCH."
+cat >&2 <<EOF
+
+Review it:
+  • open the changed files in Nimbalyst (inline diff), or:  git diff $BASE...$BRANCH
+Accept:  git switch $BASE && git merge --no-ff $BRANCH
+Reject:  git switch $BASE && git branch -D $BRANCH
+EOF

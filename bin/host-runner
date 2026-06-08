@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# ⚠️ FALLBACK PATH (not the live route as of 2026-06-03). The conductor now reaches the host via the MCP
+#    server (bin/host-mcp); this file-drop runner is kept as the dormant fallback. See DEPLOY.md §rollback.
+# host-runner — bridge between the sandboxed OpenClaw container and the host's
+# first-party CLIs. OpenClaw drops a job JSON in orchestration/bridge/inbox/;
+# the host assembles firewalled context, runs the right model, and writes the
+# result to outbox/. The HOST is the trust boundary: explicit content is gated
+# here, so the container never handles it for a moderated role.
+#
+# Job JSON:  { "role": "audit", "instruction": "…", "targets": ["manuscript/ch01/s01.md"] }
+# Usage:     bin/host-runner [--once]      (--once: drain inbox then exit; default: watch)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/common.sh"; . "$HERE/lib/context.sh"; . "$HERE/lib/run-model.sh"; . "$HERE/lib/workflow.sh"
+set +e +o pipefail   # a failing job must not kill the runner
+
+BRIDGE="$ROOT/orchestration/bridge"; IN="$BRIDGE/inbox"; OUT="$BRIDGE/outbox"; DONE="$BRIDGE/processed"
+mkdir -p "$IN" "$OUT" "$DONE"
+ONCE=0; [ "${1:-}" = "--once" ] && ONCE=1
+
+_jget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get(sys.argv[2],""))' "$1" "$2"; }
+
+process_job() {
+  local jf="$1" id role instruction; id="$(basename "$jf" .json)"
+  role="$(_jget "$jf" role)"; instruction="$(_jget "$jf" instruction)"
+  [ -n "$role" ] || { warn "job $id: no role"; mv "$jf" "$DONE/"; return; }
+  local targets=() t
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    t="$line"; [ -f "$t" ] || t="$ROOT/$t"   # resolve repo-relative paths (container sends these)
+    targets+=("$t")
+  done < <(python3 -c 'import json,sys; [print(t) for t in json.load(open(sys.argv[1])).get("targets",[])]' "$jf")
+
+  # role "conduct" is the Orchestration Conductor: it is a multi-step orchestration,
+  # not a single model call — hand it to bin/conduct and return the composed artifact.
+  if [ "$role" = conduct ]; then
+    info "job $id → conductor (bin/conduct) targets=${targets[*]:-none}"
+    # Live progress brief: bin/conduct streams "writers'-room" frames here (CONDUCT_PROGRESS_SINK).
+    # The file lives in the bridge dir, which is mounted into the container, so the /conduct plugin
+    # tails it and surfaces each frame in the panel via ctx.onUpdate. Seed an immediate frame so the
+    # user sees something the moment they hit enter, not a blind wait.
+    local otmp="$OUT/.$id.out.partial" etmp="$OUT/.$id.err.partial" prog="$OUT/$id.progress" art=""
+    printf '🎼 starting — the conductor is reading your request and planning (Sonnet)…\n' > "$prog"
+    if [ "${#targets[@]}" -gt 0 ]; then
+      art="$(CONDUCT_PROGRESS_SINK="$prog" "$HERE/conduct" "$instruction" "${targets[@]}" 2> "$etmp" | tail -1)"
+    else
+      art="$(CONDUCT_PROGRESS_SINK="$prog" "$HERE/conduct" "$instruction" 2> "$etmp" | tail -1)"
+    fi
+    if [ -n "$art" ] && [ -f "$art" ]; then
+      # Prepend the final brief (the sink's last frame) above the artifact, so the relay's
+      # verbatim echo always shows what each model did — including any failed/timed-out step.
+      {
+        printf '# Conductor artifact: %s\n\n' "${art#"$ROOT"/}"
+        [ -f "$prog" ] && { cat "$prog"; printf '\n'; }
+        cat "$art"
+      } > "$OUT/$id.txt"
+      rm -f "$etmp"; ok "  done → orchestration/bridge/outbox/$id.txt (${art#"$ROOT"/})"
+    else
+      # Even a dead run shouldn't be a blank wall: lead the error with the last progress frame.
+      {
+        [ -f "$prog" ] && { cat "$prog"; printf '\n'; }
+        cat "$etmp" 2>/dev/null
+      } > "$OUT/$id.err"
+      rm -f "$etmp"
+      warn "  conductor FAILED (see orchestration/bridge/outbox/$id.err)"
+    fi
+    rm -f "$otmp" "$prog"; mv "$jf" "$DONE/"; return
+  fi
+
+  local tmp; tmp="$(mktemp)"
+  {
+    printf '## House rules (AGENTS.md)\n'; cat "$ROOT/AGENTS.md"
+    printf '\n## Story context\n'
+    if [ "${#targets[@]}" -gt 0 ]; then assemble_context "$role" "${targets[@]}"; else assemble_context "$role"; fi
+    printf '\n## Task\n%s\n' "$instruction"
+  } > "$tmp"
+
+  info "job $id → role=$role ($(role_label "$role")) targets=${targets[*]:-none}"
+  # write to dotfile temps, then atomically rename — so a polling client never reads a
+  # half-written (or empty) result file.
+  local otmp="$OUT/.$id.out.partial" etmp="$OUT/.$id.err.partial"
+  if ( run_model "$role" "$tmp" ) > "$otmp" 2> "$etmp"; then
+    mv -f "$otmp" "$OUT/$id.txt"; rm -f "$etmp"; ok "  done → orchestration/bridge/outbox/$id.txt"
+  else
+    mv -f "$etmp" "$OUT/$id.err"; rm -f "$otmp"
+    warn "  FAILED (see orchestration/bridge/outbox/$id.err): $(tr '\n' ' ' < "$OUT/$id.err" | cut -c1-100)"
+  fi
+  rm -f "$tmp"; mv "$jf" "$DONE/"
+}
+
+drain() { local jf found=0; for jf in "$IN"/*.json; do [ -e "$jf" ] || continue; found=1; process_job "$jf"; done; return $found; }
+
+if [ "$ONCE" -eq 1 ]; then
+  drain || { warn "inbox empty: $IN"; exit 0; }
+else
+  info "host-runner watching $IN (Ctrl-C to stop)…"
+  while true; do drain; sleep 2; done
+fi

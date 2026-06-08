@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# host-mcp-run — launchd launcher for the fiction-host-mcp server.
+# Sources .env (for HOST_MCP_TOKEN + the lane API keys the bin/conduct subprocess
+# needs), binds the live Tailscale IP (so arch reaches it over the tailnet, and a
+# roaming Mac keeps working), and execs the Go binary. No secrets live in the plist.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+
+# Load secrets/keys from .env (git-ignored). set -a so they export to the subprocess.
+if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi
+
+# Build-if-stale: the compiled binary is git-ignored (platform-specific, 6.8 MB),
+# so a fresh checkout / changed source self-heals here before launchd execs it.
+SRC="$ROOT/orchestration/host-mcp"
+BIN="$ROOT/bin/host-mcp"
+if [ ! -x "$BIN" ] || [ "$SRC/main.go" -nt "$BIN" ]; then
+  # launchd's PATH usually lacks Go — probe the common install locations too.
+  GO="$(command -v go || true)"
+  [ -n "$GO" ] || for c in /usr/local/go/bin/go /opt/homebrew/bin/go /usr/local/bin/go; do
+    [ -x "$c" ] && GO="$c" && break
+  done
+  if [ -n "$GO" ]; then
+    ( cd "$SRC" && "$GO" build -o "$BIN" . ) || { echo "host-mcp build failed" >&2; exit 1; }
+  elif [ ! -x "$BIN" ]; then
+    echo "host-mcp missing and 'go' not found — cannot build" >&2; exit 1
+  fi
+fi
+
+# Bind the tailnet interface only (defense in depth on top of the bearer token).
+# Resolve live so a Tailscale IP change can't pin us to a stale address.
+TS_IP="$( (command -v tailscale >/dev/null && tailscale ip -4 2>/dev/null | head -1) || true )"
+ADDR="${HOST_MCP_ADDR:-}"
+if [ -z "$ADDR" ]; then
+  if [ -n "$TS_IP" ]; then ADDR="$TS_IP:8765"; else ADDR="127.0.0.1:8765"; fi
+fi
+
+exec "$ROOT/bin/host-mcp" -addr "$ADDR" -repo "$ROOT"

@@ -1,0 +1,16 @@
+{
+  "_comment": "LEGACY (Mac container 'fiction-openclaw' retired 2026-06; conductor now runs on arch via the MCP bridge — see DEPLOY.md; kept for reference/rollback only). Registers the /conduct plugin (OpenClaw entry ②). Apply with: docker exec -i fiction-openclaw node openclaw.mjs config patch --stdin < orchestration/openclaw-conduct-patch.json ; then: docker restart fiction-openclaw. The plugin source is mounted read-only at /workspace/plugins/conduct (see docker-compose.yml) and must be built once (npm install && npm run plugin:build) — see orchestration/openclaw/plugins/conduct/README.md. Entry ① (DeepSeek relay) needs none of this; it works from the workspace AGENTS.md guidance alone.",
+  "plugins": {
+    "load": {
+      "paths": ["/workspace/plugins/conduct"]
+    },
+    "entries": {
+      "conduct-plugin": { "enabled": true, "config": {} }
+    }
+  },
+  "skills": {
+    "entries": {
+      "conduct": { "enabled": true }
+    }
+  }
+}

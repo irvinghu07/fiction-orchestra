@@ -1,0 +1,68 @@
+# --- secrets (never commit; brief §5) ---
+.env
+.env.*
+*.key
+secrets/
+**/auth/
+infisical-*.json
+
+# --- agent / orchestration runtime ---
+# (git does NOT support inline comments — keep these on their own lines)
+.omc/
+orchestration/state/
+orchestration/logs/
+# host-runner job exchange (runtime)
+orchestration/bridge/
+# OpenClaw container config/auth (local, may hold tokens).
+# NOTE: ignore the DIRECT CHILDREN (/*) rather than the dir itself, so we can
+# re-include one subtree below. (`dir/` makes git refuse to descend, and child
+# negations never fire — `dir/*` ignores each entry individually instead.)
+orchestration/openclaw/*
+# ...but DO track the conduct plugin SOURCE — the S23 native /conduct command, the
+# fix that makes the panel dispatch deterministically. No secrets here (the host-mcp
+# token/url come from the gitignored runtime plugin config). Re-include the path down
+# to it level by level, then re-ignore build output / deps / local state.
+!orchestration/openclaw/plugins/
+orchestration/openclaw/plugins/*
+!orchestration/openclaw/plugins/conduct/
+orchestration/openclaw/plugins/conduct/node_modules/
+orchestration/openclaw/plugins/conduct/dist/
+orchestration/openclaw/plugins/conduct/.omc/
+# ...and the /image plugin SOURCE (deterministic image gen via host-mcp). Same rule:
+# track source, ignore build output / deps / local state. Keys live on the Mac .env.
+!orchestration/openclaw/plugins/image/
+orchestration/openclaw/plugins/image/node_modules/
+orchestration/openclaw/plugins/image/dist/
+orchestration/openclaw/plugins/image/.omc/
+# NapCat (QQ/OneBot front-end, runs on arch): track compose + config example + README,
+# but NEVER the QQ login session, the live config (holds the access token), the media
+# staging dir, or the arch-side .env (secrets).
+orchestration/napcat/ntqq/
+orchestration/napcat/shared/
+orchestration/napcat/config/*
+!orchestration/napcat/config/onebot11.example.json
+orchestration/napcat/.env
+!orchestration/napcat/.env.example
+# host-runner health-check manual-pause flag (runtime)
+orchestration/.health-paused
+*.log
+# conductor per-job audit trail (runtime: plan.json + per-step .out/.log/.status/.usage)
+drafts/.conduct/
+# Claude Code per-project local settings + lock (settings.local.json is by-design personal)
+.claude/
+# conductor/runtime project cache
+cache/
+
+# --- compiled artifacts (built on-demand by bin/host-mcp-run; source in orchestration/host-mcp/) ---
+bin/host-mcp
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Nimbalyst local history (it autosaves versions; keep canonical in git) ---
+.nimbalyst/
+
+# NOTE: manuscript/, drafts/, and codex/ ARE tracked — they are the point.

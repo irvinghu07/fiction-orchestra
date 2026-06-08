@@ -1,0 +1,41 @@
+{
+  "id": "conduct-plugin",
+  "name": "Conduct",
+  "description": "Route a request to the host Orchestration Conductor (LLM-bypass; MCP-over-HTTP).",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "commandAliases": [
+    {
+      "name": "conduct",
+      "kind": "runtime-slash"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "hostMcpUrl": {
+        "type": "string",
+        "description": "host-mcp MCP-over-HTTP endpoint (e.g. http://100.94.171.80:8765/mcp)."
+      },
+      "hostMcpToken": {
+        "type": "string",
+        "description": "Bearer token for host-mcp (wired via `openclaw config set`, not committed)."
+      },
+      "napcatHttpUrl": {
+        "type": "string",
+        "description": "NapCat OneBot HTTP base for live-progress relay, e.g. http://127.0.0.1:3010 (defaults to channels.onebot.httpUrl)."
+      },
+      "napcatToken": {
+        "type": "string",
+        "description": "NapCat access token for the relay (defaults to channels.onebot.accessToken)."
+      },
+      "liveEventsUrl": {
+        "type": "string",
+        "description": "host-mcp sanitized progress SSE, default http://100.94.171.80:8765/live/events."
+      }
+    }
+  }
+}

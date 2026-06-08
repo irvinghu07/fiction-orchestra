@@ -1,0 +1,18 @@
+{
+  "_comment": "LEGACY (Mac container 'fiction-openclaw' retired 2026-06; kept for reference/rollback — see DEPLOY.md). Apply with: docker exec -i fiction-openclaw node openclaw.mjs config patch --stdin < orchestration/openclaw-deepseek-patch.json ; then: docker restart fiction-openclaw. Registers DeepSeek's current models (built-in deepseek-chat is retired) and sets the default agent model. No secrets here — apiKey is referenced from the container's DEEPSEEK_API_KEY env.",
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "deepseek": {
+        "api": "openai-completions",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKey": { "source": "env", "provider": "default", "id": "DEEPSEEK_API_KEY" },
+        "models": [
+          { "id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "api": "openai-completions", "baseUrl": "https://api.deepseek.com" },
+          { "id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro", "api": "openai-completions", "baseUrl": "https://api.deepseek.com" }
+        ]
+      }
+    }
+  },
+  "agents": { "defaults": { "model": "deepseek/deepseek-v4-flash" } }
+}

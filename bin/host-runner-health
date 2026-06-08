@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# host-runner-health — hourly auth health probe for the always-on host-runner.
+# The first-party CLIs (Claude/Grok/Codex/agy) silently log themselves out over time;
+# this DETECTS that (it cannot fix it — re-auth needs interactive OAuth) and ALERTS via a
+# macOS notification + a JSON status file. It self-gates so it stays quiet while you work:
+# skips if you're at the keyboard, if a real bridge job recently proved liveness, or if paused.
+#
+# Usage: bin/host-runner-health [--force]   (--force bypasses the three skip gates)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/common.sh"; . "$HERE/lib/usage.sh"
+set +eu +o pipefail   # a failing probe / missing arg must never abort or crash-loop the agent
+
+FORCE=0; [ "${1:-}" = "--force" ] && FORCE=1
+
+LOGDIR="$ROOT/orchestration/logs"; mkdir -p "$LOGDIR"
+HJSON="$LOGDIR/health.json"; HLOG="$LOGDIR/health.out.log"
+PAUSE="$ROOT/orchestration/.health-paused"
+OUTBOX="$ROOT/orchestration/bridge/outbox"
+IDLE_MIN_S="${HR_IDLE_MIN_S:-600}"      # you count as "present" if HID input idle < this (10 min)
+RECENT_JOB_S="${HR_RECENT_JOB_S:-3600}" # a successful job within this window already proves liveness
+
+ts()      { date '+%Y-%m-%dT%H:%M:%S%z'; }
+logline() { printf '%s %s\n' "$(ts)" "$*" >> "$HLOG"; }
+write_json() { # write_json SKIPPED REASON [results-json]
+  local results="$3"; [ -n "$results" ] || results="{}"
+  printf '{"ts":"%s","skipped":%s,"reason":"%s","idle":%s,"results":%s}\n' \
+    "$(ts)" "$1" "$2" "${IDLE_S:-null}" "$results" > "$HJSON"
+}
+
+# input-idle seconds (macOS HID; HIDIdleTime is in nanoseconds)
+IDLE_S="$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/{print int($NF/1000000000); exit}')"
+[ -n "$IDLE_S" ] || IDLE_S=999999
+
+if [ "$FORCE" -ne 1 ]; then
+  if [ -f "$PAUSE" ]; then logline "skip: paused"; write_json true paused; exit 0; fi
+  if [ "$IDLE_S" -lt "$IDLE_MIN_S" ]; then
+    logline "skip: user active (idle ${IDLE_S}s)"; write_json true user-active; exit 0
+  fi
+  newest=0
+  for f in "$OUTBOX"/*.txt; do
+    [ -e "$f" ] || continue
+    m="$(stat -f %m "$f" 2>/dev/null || echo 0)"; [ "$m" -gt "$newest" ] && newest="$m"
+  done
+  if [ "$newest" -gt 0 ]; then
+    age=$(( $(date +%s) - newest ))
+    if [ "$age" -lt "$RECENT_JOB_S" ]; then
+      logline "skip: recent job (${age}s ago)"; write_json true recent-job; exit 0
+    fi
+  fi
+fi
+
+# --- probe the subscription CLIs (machine-readable lines from smoke-auth.sh --health) ---
+probe="$("$HERE/smoke-auth.sh" --health --timeout 30 2>/dev/null)"
+
+fails=(); results="{"; first=1
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  id="${line%% *}"; rest="${line#* }"; st="PASS"
+  case "$rest" in FAIL*) st="FAIL";; esac
+  [ "$first" -eq 1 ] || results+=","
+  results+="\"$id\":\"$st\""; first=0
+  [ "$st" = "FAIL" ] && fails+=("$id")
+done <<EOF
+$probe
+EOF
+results+="}"
+
+write_json false probed "$results"
+logline "probe: $(printf '%s' "$probe" | tr '\n' ' ')"
+
+# free piggyback: refresh the all-lane usage snapshot (DeepSeek balance + ledger tally).
+# health.json (just written) supplies the per-lane auth status column.
+usage_write_snapshot >/dev/null 2>&1 && logline "usage snapshot refreshed" || logline "usage snapshot skipped"
+
+if [ "${#fails[@]}" -gt 0 ]; then
+  msg="Re-auth needed: ${fails[*]}"
+  osascript -e "display notification \"$msg\" with title \"Fiction host-runner\" sound name \"Basso\"" 2>/dev/null || true
+  warn "$msg"
+else
+  logline "all subscription CLIs OK"
+fi
+exit 0

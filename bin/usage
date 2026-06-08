@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# usage — show all five lanes' budget in one place (DEVLOG ★ usage feature).
+# Reports per-lane SPENT (tallied from our run-log ledger) and BUDGET-LEFT
+# (DeepSeek's live $ balance — the one definitive budget signal). Subscription
+# remaining-quota is interactive-only; agy/grok expose nothing → honest N/A.
+#
+# Usage:
+#   usage                 human table (refreshes the cached snapshot)
+#   usage --json          machine-readable snapshot JSON
+#   usage --since <days>  only tally spend within the last N days
+#   usage --no-cache      don't write orchestration/logs/usage.json
+#
+# Cache: orchestration/logs/usage.json (gitignored). The DeepSeek balance curl is the
+# only network call; the key is read from env/.env and never printed.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/common.sh"; . "$HERE/lib/usage.sh"
+set +e +o pipefail
+
+JSON=0; SINCE=0; CACHE=1
+while [ "$#" -gt 0 ]; do case "$1" in
+  --json)     JSON=1;;
+  --since)    shift; SINCE="${1:?--since needs days}";;
+  --no-cache) CACHE=0;;
+  -h|--help)  sed -n '2,15p' "$0"; exit 0;;
+  *) die "unknown arg: $1";;
+esac; shift; done
+
+SNAP="$(usage_snapshot_json "$SINCE")"
+[ "$CACHE" -eq 1 ] && { mkdir -p "$USAGE_LOGDIR"; printf '%s\n' "$SNAP" > "$USAGE_SNAPSHOT"; }
+
+if [ "$JSON" -eq 1 ]; then
+  printf '%s\n' "$SNAP"
+  exit 0
+fi
+
+# human table
+info "Lane usage & balance  ($(printf '%s' "$SNAP" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("ts",""))' 2>/dev/null))"
+[ "$SINCE" != "0" ] && info "(spend window: last ${SINCE}d)"
+echo
+printf '  %-9s %-9s %-14s %-9s %-16s %s\n' LANE PLAN 'SPENT(tok/$)' 'CACHED' 'BUDGET-LEFT' STATUS
+USAGE_SNAP="$SNAP" python3 <<'PY'
+import json, os
+d = json.loads(os.environ["USAGE_SNAP"])
+def fmt_tok(n):
+    if n is None:
+        return "-"
+    if n >= 1000:
+        return "%.1fk" % (n / 1000.0)
+    return str(n)
+for key in ("claude", "codex", "agy", "grok", "deepseek", "kimi"):
+    r = d["lanes"].get(key, {})
+    tok = fmt_tok(r.get("spent_tokens"))
+    cost = r.get("spent_usd_est")
+    spent = tok if cost is None else "%s/$%.2f" % (tok, cost)
+    # CACHED = prefix tokens served from cache (Stage 1.5). 0 with real spend ⇒ the bible
+    # prefix isn't byte-stable; "-" means the lane exposes no cache counter (agy/grok).
+    ct = r.get("cached_tokens")
+    cached = fmt_tok(ct) if ct else ("-" if ct is None else "0")
+    bl = r.get("budget_left")
+    cur = r.get("currency") or ""
+    budget = "-" if bl is None else ("%s %s" % (bl, cur)).strip()
+    label = r.get("label", key)
+    plan = r.get("plan", "")
+    status = r.get("status", "?")
+    note = r.get("note", "")
+    print("  %-9s %-9s %-14s %-9s %-16s %s   %s" % (label, plan, spent, cached, budget, status, note))
+PY
+echo
+[ "$CACHE" -eq 1 ] && ok "snapshot → ${USAGE_SNAPSHOT#"$ROOT"/}"
